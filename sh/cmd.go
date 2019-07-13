@@ -83,6 +83,45 @@ func OutputWith(env map[string]string, cmd string, args ...string) (string, erro
 	return strings.TrimSuffix(buf.String(), "\n"), err
 }
 
+// Pipe runs the given command and returns the text from stdout, but pipes
+// stdin to the commands stdin. This is for running a sequence of commands that
+// would normally be piped together like:
+//
+//	cat /some/file | sort -u >/some/sortedfile
+//
+// Which would become:
+//
+//	out, err := sh.Output("cat", "/some/file")
+//	if err != nil {
+//		return err
+//	}
+//	stdin := strings.NewReader(out)
+//	out, err = sh.Pipe(strings.NewReader(out), "sort", "-u")
+//	if err != nil {
+//		return err
+//	}
+//	return ioutil.WriteFile("/some/file", []byte(out), 0644)
+func Pipe(stdin io.Reader, cmd string, args ...string) (string, error) {
+	buf := &bytes.Buffer{}
+	_, err := execCmd(nil, buf, os.Stderr, stdin, cmd, args...)
+	return strings.TrimSuffix(buf.String(), "\n"), err
+}
+
+// PipeWith is like Pipe, but it adds adds env to the environment variables for
+// the command being run. Environment variables should be in the format name=value.
+func PipeWith(env map[string]string, stdin io.Reader, cmd string, args ...string) (string, error) {
+	buf := &bytes.Buffer{}
+	_, err := execCmd(env, buf, os.Stderr, stdin, cmd, args...)
+	return strings.TrimSuffix(buf.String(), "\n"), err
+}
+
+// PipeCmd returns a function that will call Pipe with the given command.
+func PipeCmd(cmd string, args ...string) func(stdin io.Reader, args ...string) (string, error) {
+	return func(stdin io.Reader, args2 ...string) (string, error) {
+		return Pipe(stdin, cmd, append(args, args2...)...)
+	}
+}
+
 // Exec executes the command, piping its stderr to mage's stderr and
 // piping its stdout to the given writer. If the command fails, it will return
 // an error that, if returned from a target or mg.Deps call, will cause mage to
@@ -95,7 +134,11 @@ func OutputWith(env map[string]string, cmd string, args ...string) (string, erro
 // Ran reports if the command ran (rather than was not found or not executable).
 // Code reports the exit code the command returned if it ran. If err == nil, ran
 // is always true and code is always 0.
-func Exec(env map[string]string, stdout, stderr io.Writer, cmd string, args ...string) (ran bool, err error) {
+func Exec(env map[string]string, stdout, stderr io.Writer, cmd string, args ...string) (bool, error) {
+	return execCmd(env, stdout, stderr, nil, cmd, args...)
+}
+
+func execCmd(env map[string]string, stdout, stderr io.Writer, stdin io.Reader, cmd string, args ...string) (ran bool, err error) {
 	expand := func(s string) string {
 		s2, ok := env[s]
 		if ok {
@@ -107,7 +150,7 @@ func Exec(env map[string]string, stdout, stderr io.Writer, cmd string, args ...s
 	for i := range args {
 		args[i] = os.Expand(args[i], expand)
 	}
-	ran, code, err := run(env, stdout, stderr, cmd, args...)
+	ran, code, err := run(env, stdout, stderr, stdin, cmd, args...)
 	if err == nil {
 		return true, nil
 	}
@@ -117,7 +160,10 @@ func Exec(env map[string]string, stdout, stderr io.Writer, cmd string, args ...s
 	return ran, fmt.Errorf(`failed to run "%s %s: %v"`, cmd, strings.Join(args, " "), err)
 }
 
-func run(env map[string]string, stdout, stderr io.Writer, cmd string, args ...string) (ran bool, code int, err error) {
+func run(env map[string]string, stdout, stderr io.Writer, stdin io.Reader, cmd string, args ...string) (ran bool, code int, err error) {
+	if stdin == nil {
+		stdin = os.Stdin
+	}
 	c := exec.Command(cmd, args...)
 	c.Env = os.Environ()
 	for k, v := range env {
@@ -125,7 +171,7 @@ func run(env map[string]string, stdout, stderr io.Writer, cmd string, args ...st
 	}
 	c.Stderr = stderr
 	c.Stdout = stdout
-	c.Stdin = os.Stdin
+	c.Stdin = stdin
 	log.Println("exec:", cmd, strings.Join(args, " "))
 	err = c.Run()
 	return CmdRan(err), ExitStatus(err), err

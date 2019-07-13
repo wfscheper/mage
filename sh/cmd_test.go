@@ -3,8 +3,20 @@ package sh
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 )
+
+func TestPipe(t *testing.T) {
+	out, err := Pipe(strings.NewReader("foo\nbar\nbaz\nbat"), "sort", "-u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "bar\nbat\nbaz\nfoo"
+	if out != expected {
+		t.Fatalf("expected %q but got %q", expected, out)
+	}
+}
 
 func TestOutCmd(t *testing.T) {
 	cmd := OutCmd(os.Args[0], "-printArgs", "foo", "bar")
